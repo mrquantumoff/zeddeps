@@ -75,7 +75,7 @@ impl ZedDepsExtension {
                 )
             })?;
 
-        let destination = format!("{LANGUAGE_SERVER_ID}/{}", server_binary_for_os(os));
+        let destination = server_binary_for_os(os).to_string();
         zed::download_file(
             &asset.download_url,
             &destination,

@@ -1,6 +1,6 @@
 # ZedDeps
 
-A Zed extension that shows dependency update hovers and quick fixes for **Cargo.toml** and **package.json**.
+A vibecoded Zed extension that shows dependency update hovers and quick fixes for **Cargo.toml** and **package.json**.
 
 ## Features
 
