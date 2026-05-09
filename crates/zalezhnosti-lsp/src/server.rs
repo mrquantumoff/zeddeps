@@ -28,6 +28,12 @@ struct Document {
     kind: Registry,
 }
 
+struct EditTarget {
+    uri: Url,
+    text: String,
+    span: Span,
+}
+
 pub struct Backend {
     client: Client,
     documents: Arc<Mutex<HashMap<Url, Document>>>,
@@ -119,7 +125,7 @@ impl LanguageServer for Backend {
         let Some((document, mut dep)) = self.dependency_at(&uri, position).await else {
             return Ok(None);
         };
-        self.resolve_workspace_dep(&uri, &mut dep).await;
+        resolve_workspace_dependency_from_path(&uri, &mut dep);
 
         let latest = self.registry.latest_for(&dep).await;
         let markdown = hover_markdown(&dep, latest.as_ref());
@@ -138,7 +144,7 @@ impl LanguageServer for Backend {
         let Some((document, mut dep)) = self.dependency_at(&uri, position).await else {
             return Ok(None);
         };
-        self.resolve_workspace_dep(&uri, &mut dep).await;
+        let workspace_edit_target = resolve_workspace_dependency_from_path(&uri, &mut dep);
         if !dep.can_edit {
             return Ok(None);
         }
@@ -154,12 +160,17 @@ impl LanguageServer for Backend {
         let Some(new_text) = dep.replacement_for(&latest) else {
             return Ok(None);
         };
+        let edit_target = workspace_edit_target.unwrap_or_else(|| EditTarget {
+            uri,
+            text: document.text.clone(),
+            span: dep.value_span.clone(),
+        });
 
         let edit = WorkspaceEdit {
             changes: Some(HashMap::from([(
-                uri,
+                edit_target.uri,
                 vec![TextEdit {
-                    range: span_to_range(&document.text, &dep.value_span),
+                    range: span_to_range(&edit_target.text, &edit_target.span),
                     new_text,
                 }],
             )])),
@@ -187,33 +198,6 @@ impl Backend {
         Some((document, dep))
     }
 
-    async fn resolve_workspace_dep(&self, uri: &Url, dep: &mut Dependency) {
-        if !dep.is_workspace {
-            return;
-        }
-        let Ok(path) = uri.to_file_path() else {
-            return;
-        };
-        let mut dir = path.parent();
-        while let Some(d) = dir {
-            let workspace_toml = d.join("Cargo.toml");
-            if let Ok(text) = std::fs::read_to_string(&workspace_toml) {
-                let workspace_deps = parse_cargo_manifest(&text);
-                if let Some(ws_dep) = workspace_deps
-                    .into_iter()
-                    .find(|d| d.name == dep.name && d.section == "workspace.dependencies")
-                {
-                    dep.current = ws_dep.current.clone();
-                    dep.current_version = ws_dep.current_version.clone();
-                    dep.prefix = ws_dep.prefix.clone();
-                    dep.can_edit = false;
-                    return;
-                }
-            }
-            dir = d.parent();
-        }
-    }
-
     async fn publish_diagnostics(&self, uri: Url) {
         let Some(document) = self.documents.lock().await.get(&uri).cloned() else {
             return;
@@ -221,7 +205,7 @@ impl Backend {
 
         let mut diagnostics = Vec::new();
         for mut dep in parse_manifest(&document.text, document.kind) {
-            self.resolve_workspace_dep(&uri, &mut dep).await;
+            resolve_workspace_dependency_from_path(&uri, &mut dep);
             let latest = self.registry.latest_for(&dep).await;
             match latest {
                 Ok(latest)
@@ -249,11 +233,6 @@ impl Backend {
 }
 
 fn hover_markdown(dep: &Dependency, latest: std::result::Result<&LatestInfo, &String>) -> String {
-    let registry = match dep.registry {
-        Registry::Cargo => "crates.io",
-        Registry::Npm => "npm",
-    };
-    let package_url = dep.registry.package_url(&dep.name);
     match latest {
         Ok(latest_info)
             if latest_info
@@ -266,26 +245,94 @@ fn hover_markdown(dep: &Dependency, latest: std::result::Result<&LatestInfo, &St
                 .replacement_for(latest)
                 .unwrap_or_else(|| latest.to_string());
             format!(
-                "**{}**\n\n[Open in {}]({})\n\nCurrent: `{}`\n\nLatest stable: `{}`\n\nReplacement: `{}`",
-                dep.name, registry, package_url, dep.current, latest, replacement
+                "**{}**\n\n{}\n\nCurrent: `{}`\n\nLatest stable: `{}`\n\nReplacement: `{}`",
+                dep.name,
+                dependency_links_markdown(dep, Some(latest_info)),
+                dep.current,
+                latest,
+                replacement
             )
         }
-        Ok(LatestInfo {
-            version: Some(latest),
-            ..
-        }) => format!(
-            "**{}**\n\n[Open in {}]({})\n\nCurrent: `{}`\n\nLatest stable: `{}`\n\nAlready up to date.",
-            dep.name, registry, package_url, dep.current, latest
+        Ok(
+            latest_info @ LatestInfo {
+                version: Some(latest),
+                ..
+            },
+        ) => format!(
+            "**{}**\n\n{}\n\nCurrent: `{}`\n\nLatest stable: `{}`\n\nAlready up to date.",
+            dep.name,
+            dependency_links_markdown(dep, Some(latest_info)),
+            dep.current,
+            latest
         ),
-        Ok(LatestInfo { version: None, .. }) => format!(
-            "**{}**\n\n[Open in {}]({})\n\nCurrent: `{}`\n\nNo stable registry version was found.",
-            dep.name, registry, package_url, dep.current
+        Ok(latest_info @ LatestInfo { version: None, .. }) => format!(
+            "**{}**\n\n{}\n\nCurrent: `{}`\n\nNo stable registry version was found.",
+            dep.name,
+            dependency_links_markdown(dep, Some(latest_info)),
+            dep.current
         ),
         Err(error) => format!(
-            "**{}**\n\n[Open in {}]({})\n\nCurrent: `{}`\n\nCould not check latest version: `{}`",
-            dep.name, registry, package_url, dep.current, error
+            "**{}**\n\n{}\n\nCurrent: `{}`\n\nCould not check latest version: `{}`",
+            dep.name,
+            dependency_links_markdown(dep, None),
+            dep.current,
+            error
         ),
     }
+}
+
+fn dependency_links_markdown(dep: &Dependency, latest: Option<&LatestInfo>) -> String {
+    let registry = match dep.registry {
+        Registry::Cargo => "crates.io",
+        Registry::Npm => "npm",
+    };
+    let package_url = dep.registry.package_url(&dep.name);
+    let mut links = format!("[Open in {registry}]({package_url})");
+    if let Some(repository_url) = latest.and_then(|latest| latest.repository_url.as_deref()) {
+        if repository_url != package_url {
+            links.push_str(&format!(" | [Open repository]({repository_url})"));
+        }
+    }
+    links
+}
+
+fn resolve_workspace_dependency_from_path(uri: &Url, dep: &mut Dependency) -> Option<EditTarget> {
+    if !dep.is_workspace {
+        return None;
+    }
+    let Ok(path) = uri.to_file_path() else {
+        return None;
+    };
+    let mut dir = path.parent();
+    while let Some(d) = dir {
+        let workspace_toml = d.join("Cargo.toml");
+        if let Ok(text) = std::fs::read_to_string(&workspace_toml) {
+            let workspace_deps = parse_cargo_manifest(&text);
+            if let Some(ws_dep) = workspace_deps
+                .into_iter()
+                .find(|d| d.name == dep.name && d.section == "workspace.dependencies")
+            {
+                dep.current = ws_dep.current.clone();
+                dep.current_version = ws_dep.current_version.clone();
+                dep.prefix = ws_dep.prefix.clone();
+                dep.can_edit = ws_dep.can_edit;
+
+                if !ws_dep.can_edit {
+                    return None;
+                }
+                let Ok(uri) = Url::from_file_path(workspace_toml) else {
+                    return None;
+                };
+                return Some(EditTarget {
+                    uri,
+                    text,
+                    span: ws_dep.value_span,
+                });
+            }
+        }
+        dir = d.parent();
+    }
+    None
 }
 
 fn is_outdated(dep: &Dependency, latest: &Version) -> bool {
@@ -341,6 +388,10 @@ type HoverProviderCapability = tower_lsp::lsp_types::HoverProviderCapability;
 mod tests {
     use super::*;
     use crate::manifest::{Registry, parse_manifest};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn converts_offsets_and_positions() {
@@ -363,5 +414,75 @@ mod tests {
         assert!(markdown.contains("[Open in crates.io](https://crates.io/crates/serde)"));
         assert!(markdown.contains("Latest stable: `1.1.0`"));
         assert!(markdown.contains("Replacement: `1.1.0`"));
+    }
+
+    #[test]
+    fn hover_includes_registry_and_repository_links() {
+        let text = r#"{
+  "dependencies": {
+    "react": "18.2.0"
+  }
+}"#;
+        let dep = parse_manifest(text, Registry::Npm).remove(0);
+        let latest = LatestInfo {
+            version: Some(Version::parse("18.2.0").unwrap()),
+            repository_url: Some("https://github.com/facebook/react".to_string()),
+        };
+
+        let markdown = hover_markdown(&dep, Ok(&latest));
+
+        assert!(markdown.contains("[Open in npm](https://www.npmjs.com/package/react)"));
+        assert!(markdown.contains("[Open repository](https://github.com/facebook/react)"));
+    }
+
+    #[test]
+    fn resolves_workspace_dependency_to_workspace_manifest_edit_target() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "zalezhnosti-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let member_dir = temp_root.join("crates").join("member");
+        fs::create_dir_all(&member_dir).unwrap();
+
+        let workspace_manifest = temp_root.join("Cargo.toml");
+        let workspace_text = r#"
+[workspace]
+members = ["crates/member"]
+
+[workspace.dependencies]
+serde = "1.0"
+"#;
+        fs::write(&workspace_manifest, workspace_text).unwrap();
+
+        let member_manifest = member_dir.join("Cargo.toml");
+        let member_text = r#"
+[package]
+name = "member"
+version = "0.1.0"
+
+[dependencies]
+serde = { workspace = true }
+"#;
+        fs::write(&member_manifest, member_text).unwrap();
+
+        let mut dep = parse_manifest(member_text, Registry::Cargo).remove(0);
+        let uri = Url::from_file_path(&member_manifest).unwrap();
+        let edit_target = resolve_workspace_dependency_from_path(&uri, &mut dep).unwrap();
+
+        assert_eq!(dep.current, "1.0");
+        assert!(dep.can_edit);
+        assert_eq!(
+            edit_target.uri,
+            Url::from_file_path(&workspace_manifest).unwrap()
+        );
+        assert_eq!(
+            &edit_target.text[edit_target.span.start..edit_target.span.end],
+            "1.0"
+        );
+
+        fs::remove_dir_all(temp_root).unwrap();
     }
 }

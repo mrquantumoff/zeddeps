@@ -4,6 +4,7 @@ A vibecoded Zed extension that shows dependency update hovers and quick fixes fo
 
 ## Features
 
+- **Registry and repo links** - Hovers link to the package page on the registry and, when available, the source repository.
 - **Hover info** — Hover over any dependency version to see the latest stable release available on [crates.io](https://crates.io) or [npm](https://www.npmjs.com).
 - **Quick fix** — Click the lightbulb to update a dependency to its latest stable version in one action.
 - **Diagnostics** — Outdated dependencies are highlighted with an information diagnostic.
@@ -18,6 +19,8 @@ Install directly from the Zed extensions panel by installing this repo as a dev 
 |-----------------|------------|
 | `Cargo.toml`    | crates.io  |
 | `package.json`  | npm        |
+
+Rust workspace dependencies declared in `[workspace.dependencies]` are supported, including `workspace = true` references from member crates.
 
 ## Development
 
