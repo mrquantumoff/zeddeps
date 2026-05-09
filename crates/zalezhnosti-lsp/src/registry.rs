@@ -13,7 +13,15 @@ use tokio::sync::Mutex;
 use crate::manifest::{Dependency, Registry, strip_semver_metadata};
 
 const CACHE_TTL: Duration = Duration::from_secs(10 * 60);
-const USER_AGENT_VALUE: &str = concat!("zeddeps-lsp/", env!("CARGO_PKG_VERSION"));
+const USER_AGENT_VALUE: &str = concat!("zalezhnosti-lsp/", env!("CARGO_PKG_VERSION"));
+
+#[derive(Debug, Clone)]
+pub struct LatestInfo {
+    pub version: Option<Version>,
+    pub repository_url: Option<String>,
+}
+
+pub type LatestResult = Result<LatestInfo, String>;
 
 #[derive(Clone)]
 pub struct RegistryClient {
@@ -33,8 +41,6 @@ struct CacheEntry {
     etag: Option<String>,
     result: LatestResult,
 }
-
-pub type LatestResult = Result<Option<Version>, String>;
 
 impl RegistryClient {
     pub fn new() -> Self {
@@ -126,7 +132,10 @@ impl RegistryClient {
         FetchOutcome::Fresh {
             result: body
                 .map_err(|error| format!("crates.io response parse failed: {error}"))
-                .map(|body| newest_stable_crate_version(body.versions)),
+                .map(|body| LatestInfo {
+                    version: newest_stable_crate_version(body.versions),
+                    repository_url: body.crate_info.repository.filter(|s| !s.is_empty()),
+                }),
             etag,
         }
     }
@@ -169,7 +178,13 @@ impl RegistryClient {
         FetchOutcome::Fresh {
             result: body
                 .map_err(|error| format!("npm response parse failed: {error}"))
-                .map(newest_stable_npm_version),
+                .map(|body| LatestInfo {
+                    version: newest_stable_npm_version(&body),
+                    repository_url: body
+                        .repository
+                        .and_then(|r| r.url)
+                        .and_then(|u| clean_npm_repo_url(&u)),
+                }),
             etag,
         }
     }
@@ -191,7 +206,14 @@ enum FetchOutcome {
 
 #[derive(Deserialize)]
 struct CratesResponse {
+    #[serde(rename = "crate")]
+    crate_info: CrateInfo,
     versions: Vec<CrateVersion>,
+}
+
+#[derive(Deserialize)]
+struct CrateInfo {
+    repository: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -214,9 +236,15 @@ struct NpmResponse {
     #[serde(rename = "dist-tags")]
     dist_tags: HashMap<String, String>,
     versions: HashMap<String, serde_json::Value>,
+    repository: Option<NpmRepository>,
 }
 
-fn newest_stable_npm_version(body: NpmResponse) -> Option<Version> {
+#[derive(Deserialize)]
+struct NpmRepository {
+    url: Option<String>,
+}
+
+fn newest_stable_npm_version(body: &NpmResponse) -> Option<Version> {
     if let Some(latest) = body
         .dist_tags
         .get("latest")
@@ -231,6 +259,27 @@ fn newest_stable_npm_version(body: NpmResponse) -> Option<Version> {
         .filter_map(|version| Version::parse(strip_semver_metadata(version)).ok())
         .filter(is_stable)
         .max()
+}
+
+fn clean_npm_repo_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.starts_with("git+") {
+        Some(url.strip_prefix("git+")?.to_string())
+    } else if url.starts_with("git://") {
+        Some(url.replacen("git://", "https://", 1))
+    } else if url.starts_with("github:") {
+        Some(format!(
+            "https://github.com/{}",
+            url.strip_prefix("github:")?
+        ))
+    } else if url.starts_with("gitlab:") {
+        Some(format!(
+            "https://gitlab.com/{}",
+            url.strip_prefix("gitlab:")?
+        ))
+    } else {
+        Some(url.to_string())
+    }
 }
 
 fn is_stable(version: &Version) -> bool {
@@ -272,10 +321,31 @@ mod tests {
                 ("1.2.0".to_string(), serde_json::json!({})),
                 ("2.0.0-beta.1".to_string(), serde_json::json!({})),
             ]),
+            repository: None,
         };
         assert_eq!(
-            newest_stable_npm_version(body),
+            newest_stable_npm_version(&body),
             Some(Version::parse("1.2.0").unwrap())
+        );
+    }
+
+    #[test]
+    fn cleans_npm_repo_urls() {
+        assert_eq!(
+            clean_npm_repo_url("git+https://github.com/foo/bar.git"),
+            Some("https://github.com/foo/bar.git".to_string())
+        );
+        assert_eq!(
+            clean_npm_repo_url("git://github.com/foo/bar"),
+            Some("https://github.com/foo/bar".to_string())
+        );
+        assert_eq!(
+            clean_npm_repo_url("github:foo/bar"),
+            Some("https://github.com/foo/bar".to_string())
+        );
+        assert_eq!(
+            clean_npm_repo_url("https://github.com/foo/bar"),
+            Some("https://github.com/foo/bar".to_string())
         );
     }
 }

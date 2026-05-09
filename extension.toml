@@ -1,16 +1,16 @@
-id = "zeddeps"
-name = "ZedDeps"
+id = "zalezhnosti"
+name = "Zalezhnosti"
 version = "0.2.0"
 schema_version = 1
 authors = ["Demir Yerli <me@mrquantumoff.dev>"]
 description = "Dependency update hovers and quick fixes for Cargo.toml and package.json"
-repository = "https://git.mrquantumoff.dev/qnt/zeddeps"
+repository = "https://git.mrquantumoff.dev/qnt/zalezhnosti"
 
 capabilities = [
-  { kind = "download_file", host = "github.com", path = ["mrquantumoff", "zeddeps", "releases", "download", "**"] },
+  { kind = "download_file", host = "github.com", path = ["mrquantumoff", "zalezhnosti", "releases", "download", "**"] },
   { kind = "download_file", host = "objects.githubusercontent.com", path = ["github-production-release-asset-*", "**"] },
 ]
 
-[language_servers.zeddeps-lsp]
-name = "ZedDeps LSP"
+[language_servers.zalezhnosti-lsp]
+name = "Zalezhnosti LSP"
 languages = ["TOML", "JSON"]

@@ -39,7 +39,7 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Check Zed extension Wasm target
-        run: cargo check -p zeddeps --target wasm32-wasip1 --locked
+        run: cargo check -p zalezhnosti --target wasm32-wasip1 --locked
 
   build:
     name: Build ${{ matrix.asset }}
@@ -51,28 +51,28 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            asset: zeddeps-lsp-x86_64-unknown-linux-gnu
-            binary: zeddeps-lsp
+            asset: zalezhnosti-lsp-x86_64-unknown-linux-gnu
+            binary: zalezhnosti-lsp
             builder: cargo
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            asset: zeddeps-lsp-aarch64-unknown-linux-gnu
-            binary: zeddeps-lsp
+            asset: zalezhnosti-lsp-aarch64-unknown-linux-gnu
+            binary: zalezhnosti-lsp
             builder: cross
           - os: macos-26-intel
             target: x86_64-apple-darwin
-            asset: zeddeps-lsp-x86_64-apple-darwin
-            binary: zeddeps-lsp
+            asset: zalezhnosti-lsp-x86_64-apple-darwin
+            binary: zalezhnosti-lsp
             builder: cargo
           - os: macos-26
             target: aarch64-apple-darwin
-            asset: zeddeps-lsp-aarch64-apple-darwin
-            binary: zeddeps-lsp
+            asset: zalezhnosti-lsp-aarch64-apple-darwin
+            binary: zalezhnosti-lsp
             builder: cargo
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            asset: zeddeps-lsp-x86_64-pc-windows-msvc.exe
-            binary: zeddeps-lsp.exe
+            asset: zalezhnosti-lsp-x86_64-pc-windows-msvc.exe
+            binary: zalezhnosti-lsp.exe
             builder: cargo
 
     steps:
@@ -92,11 +92,11 @@ jobs:
 
       - name: Build LSP
         if: matrix.builder == 'cargo'
-        run: cargo build -p zeddeps-lsp --release --target ${{ matrix.target }} --locked
+        run: cargo build -p zalezhnosti-lsp --release --target ${{ matrix.target }} --locked
 
       - name: Build LSP with cross
         if: matrix.builder == 'cross'
-        run: cross build -p zeddeps-lsp --release --target ${{ matrix.target }} --locked
+        run: cross build -p zalezhnosti-lsp --release --target ${{ matrix.target }} --locked
 
       - name: Prepare asset
         shell: bash
@@ -136,6 +136,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}
-          name: ZedDeps ${{ steps.release.outputs.tag }}
+          name: Zalezhnosti ${{ steps.release.outputs.tag }}
           files: dist/*
           fail_on_unmatched_files: true

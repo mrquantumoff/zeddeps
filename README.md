@@ -1,4 +1,4 @@
-# ZedDeps
+# Zalezhnosti
 
 A vibecoded Zed extension that shows dependency update hovers and quick fixes for **Cargo.toml** and **package.json**.
 
@@ -23,7 +23,7 @@ Install directly from the Zed extensions panel by installing this repo as a dev 
 
 ```bash
 cargo test --workspace
-cargo build -p zeddeps-lsp
+cargo build -p zalezhnosti-lsp
 ```
 
 ## License

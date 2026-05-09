@@ -31,6 +31,7 @@ pub struct Dependency {
     pub can_edit: bool,
     pub prefix: String,
     pub current_version: Option<Version>,
+    pub is_workspace: bool,
 }
 
 impl Dependency {
@@ -39,7 +40,12 @@ impl Dependency {
     }
 }
 
-const CARGO_SECTIONS: &[&str] = &["dependencies", "dev-dependencies", "build-dependencies"];
+const CARGO_SECTIONS: &[&str] = &[
+    "dependencies",
+    "dev-dependencies",
+    "build-dependencies",
+    "workspace.dependencies",
+];
 const NPM_SECTIONS: &[&str] = &[
     "dependencies",
     "devDependencies",
@@ -104,9 +110,27 @@ fn parse_cargo_section(trimmed: &str) -> Option<String> {
 fn parse_cargo_dependency_line(line: &str, line_start: usize, section: &str) -> Option<Dependency> {
     let line = strip_unquoted_comment(line);
     let equals = find_unquoted_char(line, '=')?;
-    let name = normalize_toml_key(line[..equals].trim())?;
+    let raw_name = line[..equals].trim();
     let value = line[equals + 1..].trim_start();
     let value_start = equals + 1 + line[equals + 1..].len() - value.len();
+
+    // Handle dotted key syntax: serde.workspace = true
+    if let Some(base_name) = raw_name.strip_suffix(".workspace") {
+        let base_name = base_name.trim();
+        if value.trim() == "true" && !base_name.is_empty() {
+            let name = normalize_toml_key(base_name)?;
+            let val_trimmed = value.trim();
+            let val_start = value_start + value.len() - value.trim_start().len();
+            return Some(build_workspace_dependency(
+                name,
+                section,
+                line_start + val_start,
+                line_start + val_start + val_trimmed.len(),
+            ));
+        }
+    }
+
+    let name = normalize_toml_key(raw_name)?;
 
     if let Some((version, rel_span)) = parse_quoted_string(value) {
         return Some(build_dependency(
@@ -119,7 +143,23 @@ fn parse_cargo_dependency_line(line: &str, line_start: usize, section: &str) -> 
         ));
     }
 
-    if !value.starts_with('{') || cargo_inline_table_is_unsupported(value) {
+    if !value.starts_with('{') {
+        return None;
+    }
+
+    // Handle workspace = true in inline table
+    if let Some(ws) = find_key_in_inline_table(value, "workspace") {
+        if ws.value == "true" {
+            return Some(build_workspace_dependency(
+                name,
+                section,
+                line_start + value_start + ws.span.start,
+                line_start + value_start + ws.span.end,
+            ));
+        }
+    }
+
+    if cargo_inline_table_is_unsupported(value) {
         return None;
     }
 
@@ -138,8 +178,6 @@ fn cargo_inline_table_is_unsupported(value: &str) -> bool {
     ["path", "git", "registry"]
         .iter()
         .any(|key| find_key_in_inline_table(value, key).is_some())
-        || value.contains("workspace = true")
-        || value.contains("workspace=true")
 }
 
 pub fn parse_package_json(text: &str) -> Vec<Dependency> {
@@ -235,6 +273,29 @@ fn build_dependency(
         can_edit,
         prefix,
         current_version,
+        is_workspace: false,
+    }
+}
+
+fn build_workspace_dependency(
+    name: String,
+    section: &str,
+    span_start: usize,
+    span_end: usize,
+) -> Dependency {
+    Dependency {
+        name,
+        section: section.to_string(),
+        registry: Registry::Cargo,
+        current: "workspace = true".to_string(),
+        value_span: Span {
+            start: span_start,
+            end: span_end,
+        },
+        can_edit: false,
+        prefix: String::new(),
+        current_version: None,
+        is_workspace: true,
     }
 }
 
@@ -302,7 +363,8 @@ fn find_key_in_inline_table(value: &str, key: &str) -> Option<InlineValue> {
         let after_equals = value[value_start..].trim_start();
         let rel_value_start = value_start + value[value_start..].len() - after_equals.len();
         if token.value == key {
-            let (string_value, string_span) = parse_quoted_string(after_equals)?;
+            let (string_value, string_span) = parse_quoted_string(after_equals)
+                .or_else(|| parse_bare_inline_value(after_equals))?;
             return Some(InlineValue {
                 value: string_value,
                 span: Span {
@@ -313,6 +375,25 @@ fn find_key_in_inline_table(value: &str, key: &str) -> Option<InlineValue> {
         }
     }
     None
+}
+
+fn parse_bare_inline_value(text: &str) -> Option<(String, Span)> {
+    let trimmed = text.trim_start();
+    let start = text.len() - trimmed.len();
+    let end = trimmed
+        .find(|char: char| char == ',' || char == '}')
+        .map(|offset| start + offset)
+        .unwrap_or(text.len());
+    let value = text[start..end].trim_end();
+    (!value.is_empty()).then(|| {
+        (
+            value.to_string(),
+            Span {
+                start,
+                end: start + value.len(),
+            },
+        )
+    })
 }
 
 #[derive(Clone)]
@@ -551,5 +632,38 @@ pretty_assertions = "~1"
         );
         assert!(!dep.can_edit);
         assert_eq!(dep.current_version, None);
+    }
+
+    #[test]
+    fn parses_workspace_dependencies_section() {
+        let text = r#"
+[workspace.dependencies]
+serde = "1.0"
+tokio = { version = "1.35", features = ["rt"] }
+
+[dependencies]
+local = { workspace = true }
+"#;
+        let deps = parse_cargo_manifest(text);
+        assert_eq!(
+            deps.iter().map(|dep| dep.name.as_str()).collect::<Vec<_>>(),
+            vec!["serde", "tokio", "local"]
+        );
+        assert!(deps[2].is_workspace);
+        assert_eq!(deps[2].current, "workspace = true");
+        assert!(!deps[2].can_edit);
+    }
+
+    #[test]
+    fn parses_dotted_workspace_key() {
+        let text = r#"
+[dependencies]
+serde.workspace = true
+"#;
+        let deps = parse_cargo_manifest(text);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "serde");
+        assert!(deps[0].is_workspace);
+        assert_eq!(deps[0].current, "workspace = true");
     }
 }

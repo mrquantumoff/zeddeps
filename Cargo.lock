@@ -2111,25 +2111,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "zed_extension_api"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0729d50b4ca0a7e28e590bbe32e3ca0194d97ef654961451a424c661a366fca0"
-dependencies = [
- "serde",
- "serde_json",
- "wit-bindgen 0.41.0",
-]
-
-[[package]]
-name = "zeddeps"
+name = "zalezhnosti"
 version = "0.2.0"
 dependencies = [
  "zed_extension_api",
 ]
 
 [[package]]
-name = "zeddeps-lsp"
+name = "zalezhnosti-lsp"
 version = "0.2.0"
 dependencies = [
  "percent-encoding",
@@ -2140,6 +2129,17 @@ dependencies = [
  "tokio",
  "toml_edit",
  "tower-lsp",
+]
+
+[[package]]
+name = "zed_extension_api"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0729d50b4ca0a7e28e590bbe32e3ca0194d97ef654961451a424c661a366fca0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wit-bindgen 0.41.0",
 ]
 
 [[package]]

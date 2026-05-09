@@ -16,8 +16,10 @@ use tower_lsp::{
 };
 
 use crate::{
-    manifest::{Dependency, Registry, Span, detect_manifest_kind, parse_manifest},
-    registry::RegistryClient,
+    manifest::{
+        Dependency, Registry, Span, detect_manifest_kind, parse_cargo_manifest, parse_manifest,
+    },
+    registry::{LatestInfo, RegistryClient},
 };
 
 #[derive(Clone)]
@@ -61,7 +63,7 @@ impl LanguageServer for Backend {
 
     async fn initialized(&self, _params: InitializedParams) {
         self.client
-            .log_message(MessageType::INFO, "ZedDeps language server initialized")
+            .log_message(MessageType::INFO, "Zalezhnosti language server initialized")
             .await;
     }
 
@@ -114,9 +116,10 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let Some((document, dep)) = self.dependency_at(&uri, position).await else {
+        let Some((document, mut dep)) = self.dependency_at(&uri, position).await else {
             return Ok(None);
         };
+        self.resolve_workspace_dep(&uri, &mut dep).await;
 
         let latest = self.registry.latest_for(&dep).await;
         let markdown = hover_markdown(&dep, latest.as_ref());
@@ -132,13 +135,17 @@ impl LanguageServer for Backend {
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = params.text_document.uri;
         let position = params.range.start;
-        let Some((document, dep)) = self.dependency_at(&uri, position).await else {
+        let Some((document, mut dep)) = self.dependency_at(&uri, position).await else {
             return Ok(None);
         };
+        self.resolve_workspace_dep(&uri, &mut dep).await;
         if !dep.can_edit {
             return Ok(None);
         }
-        let Ok(Some(latest)) = self.registry.latest_for(&dep).await else {
+        let Ok(latest_result) = self.registry.latest_for(&dep).await else {
+            return Ok(None);
+        };
+        let Some(latest) = latest_result.version else {
             return Ok(None);
         };
         if !is_outdated(&dep, &latest) {
@@ -180,21 +187,54 @@ impl Backend {
         Some((document, dep))
     }
 
+    async fn resolve_workspace_dep(&self, uri: &Url, dep: &mut Dependency) {
+        if !dep.is_workspace {
+            return;
+        }
+        let Ok(path) = uri.to_file_path() else {
+            return;
+        };
+        let mut dir = path.parent();
+        while let Some(d) = dir {
+            let workspace_toml = d.join("Cargo.toml");
+            if let Ok(text) = std::fs::read_to_string(&workspace_toml) {
+                let workspace_deps = parse_cargo_manifest(&text);
+                if let Some(ws_dep) = workspace_deps
+                    .into_iter()
+                    .find(|d| d.name == dep.name && d.section == "workspace.dependencies")
+                {
+                    dep.current = ws_dep.current.clone();
+                    dep.current_version = ws_dep.current_version.clone();
+                    dep.prefix = ws_dep.prefix.clone();
+                    dep.can_edit = false;
+                    return;
+                }
+            }
+            dir = d.parent();
+        }
+    }
+
     async fn publish_diagnostics(&self, uri: Url) {
         let Some(document) = self.documents.lock().await.get(&uri).cloned() else {
             return;
         };
 
         let mut diagnostics = Vec::new();
-        for dep in parse_manifest(&document.text, document.kind) {
+        for mut dep in parse_manifest(&document.text, document.kind) {
+            self.resolve_workspace_dep(&uri, &mut dep).await;
             let latest = self.registry.latest_for(&dep).await;
             match latest {
-                Ok(Some(latest)) if is_outdated(&dep, &latest) => {
+                Ok(latest)
+                    if latest
+                        .version
+                        .as_ref()
+                        .is_some_and(|v| is_outdated(&dep, v)) =>
+                {
                     diagnostics.push(Diagnostic {
                         range: span_to_range(&document.text, &dep.value_span),
                         severity: Some(DiagnosticSeverity::INFORMATION),
-                        source: Some("zeddeps".to_string()),
-                        message: format!("{} {} is available", dep.name, latest),
+                        source: Some("zalezhnosti".to_string()),
+                        message: format!("{} {} is available", dep.name, latest.version.unwrap()),
                         ..Diagnostic::default()
                     });
                 }
@@ -208,17 +248,20 @@ impl Backend {
     }
 }
 
-fn hover_markdown(
-    dep: &Dependency,
-    latest: std::result::Result<&Option<Version>, &String>,
-) -> String {
+fn hover_markdown(dep: &Dependency, latest: std::result::Result<&LatestInfo, &String>) -> String {
     let registry = match dep.registry {
         Registry::Cargo => "crates.io",
         Registry::Npm => "npm",
     };
     let package_url = dep.registry.package_url(&dep.name);
     match latest {
-        Ok(Some(latest)) if is_outdated(dep, latest) => {
+        Ok(latest_info)
+            if latest_info
+                .version
+                .as_ref()
+                .is_some_and(|latest| is_outdated(dep, latest)) =>
+        {
+            let latest = latest_info.version.as_ref().expect("checked by guard");
             let replacement = dep
                 .replacement_for(latest)
                 .unwrap_or_else(|| latest.to_string());
@@ -227,11 +270,14 @@ fn hover_markdown(
                 dep.name, registry, package_url, dep.current, latest, replacement
             )
         }
-        Ok(Some(latest)) => format!(
+        Ok(LatestInfo {
+            version: Some(latest),
+            ..
+        }) => format!(
             "**{}**\n\n[Open in {}]({})\n\nCurrent: `{}`\n\nLatest stable: `{}`\n\nAlready up to date.",
             dep.name, registry, package_url, dep.current, latest
         ),
-        Ok(None) => format!(
+        Ok(LatestInfo { version: None, .. }) => format!(
             "**{}**\n\n[Open in {}]({})\n\nCurrent: `{}`\n\nNo stable registry version was found.",
             dep.name, registry, package_url, dep.current
         ),
@@ -309,7 +355,10 @@ mod tests {
     fn builds_hover_for_outdated_dependency() {
         let text = "[dependencies]\nserde = \"1.0\"\n";
         let dep = parse_manifest(text, Registry::Cargo).remove(0);
-        let latest = Some(Version::parse("1.1.0").unwrap());
+        let latest = LatestInfo {
+            version: Some(Version::parse("1.1.0").unwrap()),
+            repository_url: None,
+        };
         let markdown = hover_markdown(&dep, Ok(&latest));
         assert!(markdown.contains("[Open in crates.io](https://crates.io/crates/serde)"));
         assert!(markdown.contains("Latest stable: `1.1.0`"));

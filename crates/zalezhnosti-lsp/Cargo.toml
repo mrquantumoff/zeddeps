@@ -1,5 +1,5 @@
 [package]
-name = "zeddeps-lsp"
+name = "zalezhnosti-lsp"
 version.workspace = true
 edition = "2024"
 publish = false

@@ -1,11 +1,11 @@
 use zed_extension_api::{self as zed, Result};
 
-const LANGUAGE_SERVER_ID: &str = "zeddeps-lsp";
-const RELEASE_REPOSITORY: &str = "mrquantumoff/zeddeps";
+const LANGUAGE_SERVER_ID: &str = "zalezhnosti-lsp";
+const RELEASE_REPOSITORY: &str = "mrquantumoff/zalezhnosti";
 
-struct ZedDepsExtension;
+struct ZalezhnostiExtension;
 
-impl zed::Extension for ZedDepsExtension {
+impl zed::Extension for ZalezhnostiExtension {
     fn new() -> Self {
         Self
     }
@@ -17,10 +17,10 @@ impl zed::Extension for ZedDepsExtension {
     ) -> Result<zed::Command> {
         let (os, arch) = zed::current_platform();
         let server_binary = server_binary_for_os(os);
-        let command = std::env::var("ZEDDEPS_LSP_PATH")
+        let command = std::env::var("ZALEZHNOSTI_LSP_PATH")
             .ok()
             .or_else(|| worktree.which(server_binary))
-            .or_else(|| worktree.which("zeddeps-lsp"))
+            .or_else(|| worktree.which("zalezhnosti-lsp"))
             .or_else(|| self.local_dev_server_path(worktree, server_binary))
             .map(Ok)
             .unwrap_or_else(|| self.download_language_server(os, arch))?;
@@ -33,15 +33,15 @@ impl zed::Extension for ZedDepsExtension {
     }
 }
 
-impl ZedDepsExtension {
+impl ZalezhnostiExtension {
     fn local_dev_server_path(
         &self,
         worktree: &zed::Worktree,
         server_binary: &'static str,
     ) -> Option<String> {
         let manifest = worktree.read_text_file("Cargo.toml").ok()?;
-        if !(manifest.contains("name = \"zeddeps\"")
-            && manifest.contains("members = [\"crates/zeddeps-lsp\"]"))
+        if !(manifest.contains("name = \"zalezhnosti\"")
+            && manifest.contains("members = [\"crates/zalezhnosti-lsp\"]"))
         {
             return None;
         }
@@ -61,7 +61,7 @@ impl ZedDepsExtension {
         )
         .map_err(|error| {
             format!(
-                "Could not find {LANGUAGE_SERVER_ID}. Set ZEDDEPS_LSP_PATH, put zeddeps-lsp on PATH, run `cargo build -p zeddeps-lsp` from this repo for local dev, or publish a GitHub release at {RELEASE_REPOSITORY}. GitHub error: {error}"
+                "Could not find {LANGUAGE_SERVER_ID}. Set ZALEZHNOSTI_LSP_PATH, put zalezhnosti-lsp on PATH, run `cargo build -p zalezhnosti-lsp` from this repo for local dev, or publish a GitHub release at {RELEASE_REPOSITORY}. GitHub error: {error}"
             )
         })?;
         let asset = release
@@ -92,8 +92,8 @@ impl ZedDepsExtension {
 
 fn server_binary_for_os(os: zed::Os) -> &'static str {
     match os {
-        zed::Os::Windows => "zeddeps-lsp.exe",
-        _ => "zeddeps-lsp",
+        zed::Os::Windows => "zalezhnosti-lsp.exe",
+        _ => "zalezhnosti-lsp",
     }
 }
 
@@ -106,14 +106,14 @@ fn platform_asset_name(os: zed::Os, arch: zed::Architecture) -> Result<String> {
     let arch = match arch {
         zed::Architecture::Aarch64 => "aarch64",
         zed::Architecture::X8664 => "x86_64",
-        _ => return Err("Unsupported platform architecture for zeddeps-lsp".to_string()),
+        _ => return Err("Unsupported platform architecture for zalezhnosti-lsp".to_string()),
     };
     let suffix = if matches!(os, "pc-windows-msvc") {
         ".exe"
     } else {
         ""
     };
-    Ok(format!("zeddeps-lsp-{arch}-{os}{suffix}"))
+    Ok(format!("zalezhnosti-lsp-{arch}-{os}{suffix}"))
 }
 
-zed::register_extension!(ZedDepsExtension);
+zed::register_extension!(ZalezhnostiExtension);

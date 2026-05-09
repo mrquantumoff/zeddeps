@@ -1,5 +1,5 @@
 [package]
-name = "zeddeps"
+name = "zalezhnosti"
 version.workspace = true
 edition = "2024"
 publish = false
@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 path = "src/lib.rs"
 
 [workspace]
-members = ["crates/zeddeps-lsp"]
+members = ["crates/zalezhnosti-lsp"]
 resolver = "2"
 
 [workspace.package]
