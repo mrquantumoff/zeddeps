@@ -9,13 +9,12 @@ use tower_lsp::{
     Client, LanguageServer, LspService, Server,
     jsonrpc::Result,
     lsp_types::{
-        CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
-        CodeActionOptions, CodeActionProviderCapability, CodeActionResponse, Diagnostic,
-        DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-        DidOpenTextDocumentParams, Hover, HoverContents, HoverParams, InitializeParams,
-        InitializeResult, InitializedParams, MarkupContent, MarkupKind, MessageType, Position,
-        Range, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
-        WorkspaceEdit,
+        CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
+        CodeActionProviderCapability, CodeActionResponse, Diagnostic, DiagnosticSeverity,
+        DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Hover,
+        HoverContents, HoverParams, InitializeParams, InitializeResult, InitializedParams,
+        MarkupContent, MarkupKind, MessageType, Position, Range, ServerCapabilities,
+        TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
     },
 };
 
