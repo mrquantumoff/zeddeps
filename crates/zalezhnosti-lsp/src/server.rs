@@ -537,9 +537,10 @@ fn dependency_links_markdown(dep: &Dependency, latest: Option<&LatestInfo>) -> S
     let package_url = dep.registry.package_url(&dep.name);
     let mut links = format!("[Open in {registry}]({package_url})");
     if let Some(repository_url) = latest.and_then(|latest| latest.repository_url.as_deref())
-        && repository_url != package_url {
-            links.push_str(&format!(" | [Open repository]({repository_url})"));
-        }
+        && repository_url != package_url
+    {
+        links.push_str(&format!(" | [Open repository]({repository_url})"));
+    }
     links
 }
 

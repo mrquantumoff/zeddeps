@@ -59,9 +59,10 @@ impl RegistryClient {
 
         let cached = self.cache.lock().await.get(&key).cloned();
         if let Some(entry) = cached.as_ref()
-            && entry.fetched_at.elapsed() < CACHE_TTL {
-                return entry.result.clone();
-            }
+            && entry.fetched_at.elapsed() < CACHE_TTL
+        {
+            return entry.result.clone();
+        }
 
         let result = match dep.registry {
             Registry::Cargo => self.fetch_cargo_latest(&dep.name, cached.as_ref()).await,

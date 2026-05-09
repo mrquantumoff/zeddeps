@@ -141,11 +141,11 @@ pub fn parse_cargo_manifest(text: &str) -> Vec<Dependency> {
             active_section = parse_cargo_section(trimmed);
         } else if let Some(section) = active_section.as_deref()
             && CARGO_SECTIONS.contains(&section)
-                && let Some(dep) =
-                    parse_cargo_dependency_line(line_without_newline, line_start, section)
-                {
-                    dependencies.push(dep);
-                }
+            && let Some(dep) =
+                parse_cargo_dependency_line(line_without_newline, line_start, section)
+        {
+            dependencies.push(dep);
+        }
 
         line_start += line.len();
     }
@@ -203,14 +203,15 @@ fn parse_cargo_dependency_line(line: &str, line_start: usize, section: &str) -> 
 
     // Handle workspace = true in inline table
     if let Some(ws) = find_key_in_inline_table(value, "workspace")
-        && ws.value == "true" {
-            return Some(build_workspace_dependency(
-                name,
-                section,
-                line_start + value_start + ws.span.start,
-                line_start + value_start + ws.span.end,
-            ));
-        }
+        && ws.value == "true"
+    {
+        return Some(build_workspace_dependency(
+            name,
+            section,
+            line_start + value_start + ws.span.start,
+            line_start + value_start + ws.span.end,
+        ));
+    }
 
     if cargo_inline_table_is_unsupported(value) {
         return None;
@@ -278,9 +279,10 @@ pub fn parse_requirements_manifest(text: &str) -> Vec<Dependency> {
                 requirement,
                 "requirements",
                 line_start + requirement_start,
-            ) {
-                dependencies.push(dep);
-            }
+            )
+        {
+            dependencies.push(dep);
+        }
         line_start += line.len();
     }
 
@@ -326,13 +328,14 @@ fn find_pyproject_dependency_arrays(text: &str) -> Vec<TomlDependencyArray> {
                     let value_start = line_start + equals + 1;
                     if let Some(array_start) = skip_toml_ws(text, value_start)
                         && text.as_bytes().get(array_start) == Some(&b'[')
-                            && let Some(array_end) = find_matching_toml_array(text, array_start) {
-                                arrays.push(TomlDependencyArray {
-                                    section: pyproject_section_label(section, raw_key),
-                                    start: array_start,
-                                    end: array_end,
-                                });
-                            }
+                        && let Some(array_end) = find_matching_toml_array(text, array_start)
+                    {
+                        arrays.push(TomlDependencyArray {
+                            section: pyproject_section_label(section, raw_key),
+                            start: array_start,
+                            end: array_end,
+                        });
+                    }
                 }
             }
         }
