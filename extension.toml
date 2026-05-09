@@ -1,9 +1,9 @@
 id = "zalezhnosti"
 name = "Zalezhnosti"
-version = "0.3.1"
+version = "0.4.0"
 schema_version = 1
 authors = ["Demir Yerli <me@mrquantumoff.dev>"]
-description = "Dependency update hovers and quick fixes for Cargo.toml and package.json"
+description = "Dependency update hovers and quick fixes for Cargo.toml, package.json, pyproject.toml, and requirements.txt"
 repository = "https://git.mrquantumoff.dev/qnt/zalezhnosti"
 
 capabilities = [
@@ -14,4 +14,4 @@ capabilities = [
 
 [language_servers.zalezhnosti-lsp]
 name = "Zalezhnosti LSP"
-languages = ["TOML", "JSON"]
+languages = ["TOML", "JSON", "Python"]

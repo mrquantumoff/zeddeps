@@ -4,20 +4,21 @@ use std::{
     time::{Duration, Instant},
 };
 
+use pep440_rs::Version as Pep440Version;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::header::{ETAG, IF_NONE_MATCH, USER_AGENT};
 use semver::Version;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use crate::manifest::{Dependency, Registry, strip_semver_metadata};
+use crate::manifest::{Dependency, DependencyVersion, Registry, strip_semver_metadata};
 
 const CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const USER_AGENT_VALUE: &str = concat!("zalezhnosti-lsp/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone)]
 pub struct LatestInfo {
-    pub version: Option<Version>,
+    pub version: Option<DependencyVersion>,
     pub repository_url: Option<String>,
 }
 
@@ -66,6 +67,7 @@ impl RegistryClient {
         let result = match dep.registry {
             Registry::Cargo => self.fetch_cargo_latest(&dep.name, cached.as_ref()).await,
             Registry::Npm => self.fetch_npm_latest(&dep.name, cached.as_ref()).await,
+            Registry::Pypi => self.fetch_pypi_latest(&dep.name, cached.as_ref()).await,
         };
 
         let (latest, etag) = match result {
@@ -133,7 +135,8 @@ impl RegistryClient {
             result: body
                 .map_err(|error| format!("crates.io response parse failed: {error}"))
                 .map(|body| LatestInfo {
-                    version: newest_stable_crate_version(body.versions),
+                    version: newest_stable_crate_version(body.versions)
+                        .map(DependencyVersion::Semver),
                     repository_url: body.crate_info.repository.filter(|s| !s.is_empty()),
                 }),
             etag,
@@ -179,11 +182,57 @@ impl RegistryClient {
             result: body
                 .map_err(|error| format!("npm response parse failed: {error}"))
                 .map(|body| LatestInfo {
-                    version: newest_stable_npm_version(&body),
+                    version: newest_stable_npm_version(&body).map(DependencyVersion::Semver),
                     repository_url: body
                         .repository
                         .and_then(|r| r.url)
                         .and_then(|u| clean_npm_repo_url(&u)),
+                }),
+            etag,
+        }
+    }
+
+    async fn fetch_pypi_latest(&self, name: &str, cached: Option<&CacheEntry>) -> FetchOutcome {
+        let encoded = utf8_percent_encode(name, NON_ALPHANUMERIC).to_string();
+        let url = format!("https://pypi.org/pypi/{encoded}/json");
+        let mut request = self.http.get(url).header(USER_AGENT, USER_AGENT_VALUE);
+        if let Some(etag) = cached.and_then(|entry| entry.etag.as_deref()) {
+            request = request.header(IF_NONE_MATCH, etag);
+        }
+
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                return FetchOutcome::Fresh {
+                    result: Err(format!("PyPI request failed: {error}")),
+                    etag: None,
+                };
+            }
+        };
+
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            return FetchOutcome::NotModified;
+        }
+
+        let etag = response
+            .headers()
+            .get(ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        if !response.status().is_success() {
+            return FetchOutcome::Fresh {
+                result: Err(format!("PyPI returned {}", response.status())),
+                etag,
+            };
+        }
+
+        let body = response.json::<PypiResponse>().await;
+        FetchOutcome::Fresh {
+            result: body
+                .map_err(|error| format!("PyPI response parse failed: {error}"))
+                .map(|body| LatestInfo {
+                    version: newest_stable_pypi_version(&body).map(DependencyVersion::Pep440),
+                    repository_url: pypi_repository_url(&body.info),
                 }),
             etag,
         }
@@ -244,6 +293,23 @@ struct NpmRepository {
     url: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct PypiResponse {
+    info: PypiInfo,
+    releases: HashMap<String, Vec<PypiReleaseFile>>,
+}
+
+#[derive(Deserialize)]
+struct PypiInfo {
+    home_page: Option<String>,
+    project_urls: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+struct PypiReleaseFile {
+    yanked: bool,
+}
+
 fn newest_stable_npm_version(body: &NpmResponse) -> Option<Version> {
     if let Some(latest) = body
         .dist_tags
@@ -282,6 +348,38 @@ fn clean_npm_repo_url(url: &str) -> Option<String> {
     }
 }
 
+fn newest_stable_pypi_version(body: &PypiResponse) -> Option<Pep440Version> {
+    body.releases
+        .iter()
+        .filter(|(_, files)| files.is_empty() || files.iter().any(|file| !file.yanked))
+        .filter_map(|(version, _)| version.parse::<Pep440Version>().ok())
+        .filter(Pep440Version::is_stable)
+        .max()
+}
+
+fn pypi_repository_url(info: &PypiInfo) -> Option<String> {
+    info.project_urls
+        .as_ref()
+        .and_then(|urls| {
+            [
+                "Source",
+                "Repository",
+                "Source Code",
+                "Code",
+                "Homepage",
+                "Home",
+            ]
+            .iter()
+            .find_map(|key| urls.get(*key).filter(|url| !url.is_empty()).cloned())
+        })
+        .or_else(|| {
+            info.home_page
+                .as_ref()
+                .filter(|url| !url.is_empty())
+                .cloned()
+        })
+}
+
 fn is_stable(version: &Version) -> bool {
     version.pre.is_empty()
 }
@@ -307,8 +405,8 @@ mod tests {
             },
         ];
         assert_eq!(
-            newest_stable_crate_version(versions),
-            Some(Version::parse("1.8.0").unwrap())
+            newest_stable_crate_version(versions).map(DependencyVersion::Semver),
+            Some(DependencyVersion::Semver(Version::parse("1.8.0").unwrap()))
         );
     }
 
@@ -324,8 +422,8 @@ mod tests {
             repository: None,
         };
         assert_eq!(
-            newest_stable_npm_version(&body),
-            Some(Version::parse("1.2.0").unwrap())
+            newest_stable_npm_version(&body).map(DependencyVersion::Semver),
+            Some(DependencyVersion::Semver(Version::parse("1.2.0").unwrap()))
         );
     }
 
@@ -346,6 +444,45 @@ mod tests {
         assert_eq!(
             clean_npm_repo_url("https://github.com/foo/bar"),
             Some("https://github.com/foo/bar".to_string())
+        );
+    }
+
+    #[test]
+    fn pypi_latest_ignores_yanked_and_prerelease() {
+        let body = PypiResponse {
+            info: PypiInfo {
+                home_page: None,
+                project_urls: None,
+            },
+            releases: HashMap::from([
+                (
+                    "2.0.0rc1".to_string(),
+                    vec![PypiReleaseFile { yanked: false }],
+                ),
+                ("1.9.0".to_string(), vec![PypiReleaseFile { yanked: true }]),
+                ("1.8.0".to_string(), vec![PypiReleaseFile { yanked: false }]),
+            ]),
+        };
+
+        assert_eq!(
+            newest_stable_pypi_version(&body).map(DependencyVersion::Pep440),
+            Some(DependencyVersion::Pep440("1.8.0".parse().unwrap()))
+        );
+    }
+
+    #[test]
+    fn picks_pypi_repository_url() {
+        let info = PypiInfo {
+            home_page: Some("https://example.com".to_string()),
+            project_urls: Some(HashMap::from([(
+                "Source".to_string(),
+                "https://github.com/psf/requests".to_string(),
+            )])),
+        };
+
+        assert_eq!(
+            pypi_repository_url(&info),
+            Some("https://github.com/psf/requests".to_string())
         );
     }
 }

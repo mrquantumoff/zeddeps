@@ -1,6 +1,9 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use semver::Version;
 use tokio::sync::Mutex;
 use tower_lsp::{
     Client, LanguageServer, LspService, Server,
@@ -17,7 +20,8 @@ use tower_lsp::{
 
 use crate::{
     manifest::{
-        Dependency, Registry, Span, detect_manifest_kind, parse_cargo_manifest, parse_manifest,
+        Dependency, DependencyVersion, ManifestKind, Registry, Span, detect_manifest_kind,
+        parse_cargo_manifest, parse_manifest, requirements_include_paths,
     },
     registry::{LatestInfo, RegistryClient},
 };
@@ -25,7 +29,7 @@ use crate::{
 #[derive(Clone)]
 struct Document {
     text: String,
-    kind: Registry,
+    kind: ManifestKind,
 }
 
 struct EditTarget {
@@ -37,6 +41,7 @@ struct EditTarget {
 pub struct Backend {
     client: Client,
     documents: Arc<Mutex<HashMap<Url, Document>>>,
+    known_requirement_files: Arc<Mutex<HashSet<Url>>>,
     registry: RegistryClient,
 }
 
@@ -46,6 +51,7 @@ pub async fn run() {
     let (service, socket) = LspService::new(|client| Backend {
         client,
         documents: Arc::new(Mutex::new(HashMap::new())),
+        known_requirement_files: Arc::new(Mutex::new(HashSet::new())),
         registry: RegistryClient::new(),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
@@ -78,7 +84,7 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        if let Some(kind) = detect_manifest_kind(params.text_document.uri.path()) {
+        if let Some(kind) = self.kind_for_uri(&params.text_document.uri).await {
             let uri = params.text_document.uri;
             self.documents.lock().await.insert(
                 uri.clone(),
@@ -96,11 +102,12 @@ impl LanguageServer for Backend {
             return;
         };
         let uri = params.text_document.uri;
+        let kind = self.kind_for_uri(&uri).await;
         {
             let mut documents = self.documents.lock().await;
             if let Some(document) = documents.get_mut(&uri) {
                 document.text = change.text;
-            } else if let Some(kind) = detect_manifest_kind(uri.path()) {
+            } else if let Some(kind) = kind {
                 documents.insert(
                     uri.clone(),
                     Document {
@@ -189,6 +196,17 @@ impl LanguageServer for Backend {
 }
 
 impl Backend {
+    async fn kind_for_uri(&self, uri: &Url) -> Option<ManifestKind> {
+        if let Some(kind) = detect_manifest_kind(uri.path()) {
+            return Some(kind);
+        }
+        self.known_requirement_files
+            .lock()
+            .await
+            .contains(uri)
+            .then_some(ManifestKind::Requirements)
+    }
+
     async fn dependency_at(&self, uri: &Url, position: Position) -> Option<(Document, Dependency)> {
         let document = self.documents.lock().await.get(uri).cloned()?;
         let offset = position_to_offset(&document.text, position)?;
@@ -203,8 +221,27 @@ impl Backend {
             return;
         };
 
+        let diagnostics = self
+            .diagnostics_for_text(&uri, &document.text, document.kind)
+            .await;
+        self.client
+            .publish_diagnostics(uri.clone(), diagnostics, None)
+            .await;
+
+        if document.kind == ManifestKind::Requirements {
+            self.publish_included_requirements_diagnostics(&uri, &document.text)
+                .await;
+        }
+    }
+
+    async fn diagnostics_for_text(
+        &self,
+        uri: &Url,
+        text: &str,
+        kind: ManifestKind,
+    ) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
-        for mut dep in parse_manifest(&document.text, document.kind) {
+        for mut dep in parse_manifest(text, kind) {
             resolve_workspace_dependency_from_path(&uri, &mut dep);
             let latest = self.registry.latest_for(&dep).await;
             match latest {
@@ -215,7 +252,7 @@ impl Backend {
                         .is_some_and(|v| is_outdated(&dep, v)) =>
                 {
                     diagnostics.push(Diagnostic {
-                        range: span_to_range(&document.text, &dep.value_span),
+                        range: span_to_range(text, &dep.value_span),
                         severity: Some(DiagnosticSeverity::INFORMATION),
                         source: Some("zalezhnosti".to_string()),
                         message: format!("{} {} is available", dep.name, latest.version.unwrap()),
@@ -226,10 +263,75 @@ impl Backend {
             }
         }
 
-        self.client
-            .publish_diagnostics(uri, diagnostics, None)
-            .await;
+        diagnostics
     }
+
+    async fn publish_included_requirements_diagnostics(&self, root_uri: &Url, root_text: &str) {
+        let Ok(root_path) = root_uri.to_file_path() else {
+            return;
+        };
+        let Some(root_dir) = root_path.parent().map(Path::to_path_buf) else {
+            return;
+        };
+
+        let mut visited = HashSet::from([normalize_requirement_path(root_path)]);
+        let mut stack = vec![(root_dir, root_text.to_string())];
+
+        while let Some((base_dir, text)) = stack.pop() {
+            for include in requirements_include_paths(&text) {
+                let include_path = normalize_requirement_path(resolve_requirement_include_path(
+                    &base_dir, &include,
+                ));
+                if !visited.insert(include_path.clone()) {
+                    continue;
+                }
+
+                let Ok(include_uri) = Url::from_file_path(&include_path) else {
+                    continue;
+                };
+                self.known_requirement_files
+                    .lock()
+                    .await
+                    .insert(include_uri.clone());
+
+                let include_text = self
+                    .documents
+                    .lock()
+                    .await
+                    .get(&include_uri)
+                    .map(|document| document.text.clone())
+                    .or_else(|| std::fs::read_to_string(&include_path).ok());
+                let Some(include_text) = include_text else {
+                    continue;
+                };
+
+                let diagnostics = self
+                    .diagnostics_for_text(&include_uri, &include_text, ManifestKind::Requirements)
+                    .await;
+                self.client
+                    .publish_diagnostics(include_uri, diagnostics, None)
+                    .await;
+
+                if let Some(include_dir) = include_path.parent().map(Path::to_path_buf) {
+                    stack.push((include_dir, include_text));
+                }
+            }
+        }
+    }
+}
+
+fn resolve_requirement_include_path(base_dir: &Path, include: &str) -> PathBuf {
+    let include = include.trim_matches(['"', '\'']);
+    let path = PathBuf::from(include);
+    if path.is_absolute() {
+        path
+    } else {
+        base_dir.join(path)
+    }
+}
+
+fn normalize_requirement_path(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
 }
 
 fn hover_markdown(dep: &Dependency, latest: std::result::Result<&LatestInfo, &String>) -> String {
@@ -285,6 +387,7 @@ fn dependency_links_markdown(dep: &Dependency, latest: Option<&LatestInfo>) -> S
     let registry = match dep.registry {
         Registry::Cargo => "crates.io",
         Registry::Npm => "npm",
+        Registry::Pypi => "PyPI",
     };
     let package_url = dep.registry.package_url(&dep.name);
     let mut links = format!("[Open in {registry}]({package_url})");
@@ -335,10 +438,16 @@ fn resolve_workspace_dependency_from_path(uri: &Url, dep: &mut Dependency) -> Op
     None
 }
 
-fn is_outdated(dep: &Dependency, latest: &Version) -> bool {
-    dep.current_version
-        .as_ref()
-        .is_some_and(|current| latest > current)
+fn is_outdated(dep: &Dependency, latest: &DependencyVersion) -> bool {
+    match latest {
+        DependencyVersion::Semver(latest) => dep.current_version.as_ref().is_some_and(
+            |current| matches!(current, DependencyVersion::Semver(current) if latest > current),
+        ),
+        DependencyVersion::Pep440(latest) => dep
+            .python_specifiers
+            .as_ref()
+            .is_some_and(|specifiers| !specifiers.contains(latest)),
+    }
 }
 
 fn span_to_range(text: &str, span: &Span) -> Range {
@@ -387,7 +496,8 @@ type HoverProviderCapability = tower_lsp::lsp_types::HoverProviderCapability;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{Registry, parse_manifest};
+    use crate::manifest::{DependencyVersion, ManifestKind, parse_manifest};
+    use semver::Version;
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -405,9 +515,9 @@ mod tests {
     #[test]
     fn builds_hover_for_outdated_dependency() {
         let text = "[dependencies]\nserde = \"1.0\"\n";
-        let dep = parse_manifest(text, Registry::Cargo).remove(0);
+        let dep = parse_manifest(text, ManifestKind::Cargo).remove(0);
         let latest = LatestInfo {
-            version: Some(Version::parse("1.1.0").unwrap()),
+            version: Some(DependencyVersion::Semver(Version::parse("1.1.0").unwrap())),
             repository_url: None,
         };
         let markdown = hover_markdown(&dep, Ok(&latest));
@@ -423,9 +533,9 @@ mod tests {
     "react": "18.2.0"
   }
 }"#;
-        let dep = parse_manifest(text, Registry::Npm).remove(0);
+        let dep = parse_manifest(text, ManifestKind::PackageJson).remove(0);
         let latest = LatestInfo {
-            version: Some(Version::parse("18.2.0").unwrap()),
+            version: Some(DependencyVersion::Semver(Version::parse("18.2.0").unwrap())),
             repository_url: Some("https://github.com/facebook/react".to_string()),
         };
 
@@ -433,6 +543,52 @@ mod tests {
 
         assert!(markdown.contains("[Open in npm](https://www.npmjs.com/package/react)"));
         assert!(markdown.contains("[Open repository](https://github.com/facebook/react)"));
+    }
+
+    #[test]
+    fn builds_hover_for_outdated_pypi_dependency() {
+        let text = "requests>=2,<3\n";
+        let dep = parse_manifest(text, ManifestKind::Requirements).remove(0);
+        let latest = LatestInfo {
+            version: Some(DependencyVersion::Pep440("3.0.0".parse().unwrap())),
+            repository_url: Some("https://github.com/psf/requests".to_string()),
+        };
+
+        let markdown = hover_markdown(&dep, Ok(&latest));
+
+        assert!(markdown.contains("[Open in PyPI](https://pypi.org/project/requests/)"));
+        assert!(markdown.contains("[Open repository](https://github.com/psf/requests)"));
+        assert!(markdown.contains("Latest stable: `3.0.0`"));
+        assert!(markdown.contains("Replacement: `==3.0.0`"));
+    }
+
+    #[test]
+    fn python_specifier_containment_drives_outdated_status() {
+        let text = "requests>=2,<3\n";
+        let dep = parse_manifest(text, ManifestKind::Requirements).remove(0);
+
+        assert!(!is_outdated(
+            &dep,
+            &DependencyVersion::Pep440("2.31.0".parse().unwrap())
+        ));
+        assert!(is_outdated(
+            &dep,
+            &DependencyVersion::Pep440("3.0.0".parse().unwrap())
+        ));
+    }
+
+    #[test]
+    fn resolves_relative_requirement_include_paths() {
+        let base = PathBuf::from("project").join("requirements");
+
+        assert_eq!(
+            resolve_requirement_include_path(&base, "dev.txt"),
+            base.join("dev.txt")
+        );
+        assert_eq!(
+            resolve_requirement_include_path(&base, "\"constraints.txt\""),
+            base.join("constraints.txt")
+        );
     }
 
     #[test]
@@ -468,7 +624,7 @@ serde = { workspace = true }
 "#;
         fs::write(&member_manifest, member_text).unwrap();
 
-        let mut dep = parse_manifest(member_text, Registry::Cargo).remove(0);
+        let mut dep = parse_manifest(member_text, ManifestKind::Cargo).remove(0);
         let uri = Url::from_file_path(&member_manifest).unwrap();
         let edit_target = resolve_workspace_dependency_from_path(&uri, &mut dep).unwrap();
 
