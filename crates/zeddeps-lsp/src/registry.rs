@@ -10,9 +10,10 @@ use semver::Version;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use crate::manifest::{Dependency, Registry};
+use crate::manifest::{Dependency, Registry, strip_semver_metadata};
 
 const CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const USER_AGENT_VALUE: &str = concat!("zeddeps-lsp/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Clone)]
 pub struct RegistryClient {
@@ -90,7 +91,7 @@ impl RegistryClient {
 
     async fn fetch_cargo_latest(&self, name: &str, cached: Option<&CacheEntry>) -> FetchOutcome {
         let url = format!("https://crates.io/api/v1/crates/{name}");
-        let mut request = self.http.get(url).header(USER_AGENT, "zeddeps-lsp/0.1.0");
+        let mut request = self.http.get(url).header(USER_AGENT, USER_AGENT_VALUE);
         if let Some(etag) = cached.and_then(|entry| entry.etag.as_deref()) {
             request = request.header(IF_NONE_MATCH, etag);
         }
@@ -133,7 +134,7 @@ impl RegistryClient {
     async fn fetch_npm_latest(&self, name: &str, cached: Option<&CacheEntry>) -> FetchOutcome {
         let encoded = utf8_percent_encode(name, NON_ALPHANUMERIC).to_string();
         let url = format!("https://registry.npmjs.org/{encoded}");
-        let mut request = self.http.get(url).header(USER_AGENT, "zeddeps-lsp/0.1.0");
+        let mut request = self.http.get(url).header(USER_AGENT, USER_AGENT_VALUE);
         if let Some(etag) = cached.and_then(|entry| entry.etag.as_deref()) {
             request = request.header(IF_NONE_MATCH, etag);
         }
@@ -203,7 +204,7 @@ fn newest_stable_crate_version(versions: Vec<CrateVersion>) -> Option<Version> {
     versions
         .into_iter()
         .filter(|version| !version.yanked)
-        .filter_map(|version| Version::parse(&version.num).ok())
+        .filter_map(|version| Version::parse(strip_semver_metadata(&version.num)).ok())
         .filter(is_stable)
         .max()
 }
@@ -219,7 +220,7 @@ fn newest_stable_npm_version(body: NpmResponse) -> Option<Version> {
     if let Some(latest) = body
         .dist_tags
         .get("latest")
-        .and_then(|version| Version::parse(version).ok())
+        .and_then(|version| Version::parse(strip_semver_metadata(version)).ok())
         .filter(is_stable)
     {
         return Some(latest);
@@ -227,7 +228,7 @@ fn newest_stable_npm_version(body: NpmResponse) -> Option<Version> {
 
     body.versions
         .keys()
-        .filter_map(|version| Version::parse(version).ok())
+        .filter_map(|version| Version::parse(strip_semver_metadata(version)).ok())
         .filter(is_stable)
         .max()
 }

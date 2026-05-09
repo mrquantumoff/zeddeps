@@ -250,8 +250,16 @@ fn editable_version_parts(value: &str) -> (String, &str, bool) {
     (prefix, version, can_edit)
 }
 
+pub fn strip_semver_metadata(value: &str) -> &str {
+    match value.find('+') {
+        Some(index) => &value[..index],
+        None => value,
+    }
+}
+
 pub fn parse_lenient_version(value: &str) -> Option<Version> {
     let clean = value.trim_start_matches('=').trim();
+    let clean = strip_semver_metadata(clean);
     if !is_simple_version(clean) {
         return None;
     }
