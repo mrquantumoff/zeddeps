@@ -1,0 +1,4 @@
+name = "Python Project Manifest"
+grammar = "toml"
+path_suffixes = ["pyproject.toml"]
+line_comments = ["# "]

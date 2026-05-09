@@ -1,0 +1,4 @@
+name = "Cargo Manifest"
+grammar = "toml"
+path_suffixes = ["Cargo.toml"]
+line_comments = ["# "]

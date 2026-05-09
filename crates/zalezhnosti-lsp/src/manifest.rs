@@ -110,8 +110,11 @@ pub fn detect_manifest_kind(uri_path: &str) -> Option<ManifestKind> {
 
 fn is_requirements_file(file_name: &str) -> bool {
     file_name == "requirements.txt"
+        || file_name == "constraints.txt"
         || (file_name.starts_with("requirements") && file_name.ends_with(".txt"))
+        || (file_name.starts_with("constraints") && file_name.ends_with(".txt"))
         || file_name.ends_with(".requirements.txt")
+        || file_name.ends_with(".constraints.txt")
 }
 
 pub fn parse_manifest(text: &str, kind: ManifestKind) -> Vec<Dependency> {
@@ -1055,6 +1058,34 @@ unversioned
             requirements_include_paths(text),
             vec!["dev.txt".to_string(), "constraints.txt".to_string()]
         );
+    }
+
+    #[test]
+    fn detects_only_supported_manifest_names() {
+        assert_eq!(
+            detect_manifest_kind("/workspace/Cargo.toml"),
+            Some(ManifestKind::Cargo)
+        );
+        assert_eq!(
+            detect_manifest_kind("/workspace/package.json"),
+            Some(ManifestKind::PackageJson)
+        );
+        assert_eq!(
+            detect_manifest_kind("/workspace/pyproject.toml"),
+            Some(ManifestKind::Pyproject)
+        );
+        assert_eq!(
+            detect_manifest_kind("/workspace/requirements.txt"),
+            Some(ManifestKind::Requirements)
+        );
+        assert_eq!(
+            detect_manifest_kind("/workspace/constraints.txt"),
+            Some(ManifestKind::Requirements)
+        );
+
+        assert_eq!(detect_manifest_kind("/workspace/config.toml"), None);
+        assert_eq!(detect_manifest_kind("/workspace/tsconfig.json"), None);
+        assert_eq!(detect_manifest_kind("/workspace/app.py"), None);
     }
 
     #[test]

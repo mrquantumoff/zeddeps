@@ -10,11 +10,12 @@ use tower_lsp::{
     jsonrpc::Result,
     lsp_types::{
         CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
-        CodeActionProviderCapability, CodeActionResponse, Diagnostic, DiagnosticSeverity,
-        DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Hover,
-        HoverContents, HoverParams, InitializeParams, InitializeResult, InitializedParams,
-        MarkupContent, MarkupKind, MessageType, Position, Range, ServerCapabilities,
-        TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkspaceEdit,
+        CodeActionOptions, CodeActionProviderCapability, CodeActionResponse, Diagnostic,
+        DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+        DidOpenTextDocumentParams, Hover, HoverContents, HoverParams, InitializeParams,
+        InitializeResult, InitializedParams, MarkupContent, MarkupKind, MessageType, Position,
+        Range, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+        WorkspaceEdit,
     },
 };
 
@@ -36,6 +37,17 @@ struct EditTarget {
     uri: Url,
     text: String,
     span: Span,
+}
+
+struct DependencyTextEdit {
+    uri: Url,
+    text_edit: TextEdit,
+    latest: DependencyVersion,
+}
+
+struct DependencyWorkspaceEdit {
+    workspace_edit: WorkspaceEdit,
+    latest: DependencyVersion,
 }
 
 pub struct Backend {
@@ -66,7 +78,15 @@ impl LanguageServer for Backend {
                     TextDocumentSyncKind::FULL,
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
-                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Options(
+                    CodeActionOptions {
+                        code_action_kinds: Some(vec![
+                            CodeActionKind::QUICKFIX,
+                            CodeActionKind::SOURCE_FIX_ALL,
+                        ]),
+                        ..CodeActionOptions::default()
+                    },
+                )),
                 ..ServerCapabilities::default()
             },
             server_info: None,
@@ -103,10 +123,12 @@ impl LanguageServer for Backend {
         };
         let uri = params.text_document.uri;
         let kind = self.kind_for_uri(&uri).await;
+        let mut should_publish = false;
         {
             let mut documents = self.documents.lock().await;
             if let Some(document) = documents.get_mut(&uri) {
                 document.text = change.text;
+                should_publish = true;
             } else if let Some(kind) = kind {
                 documents.insert(
                     uri.clone(),
@@ -115,15 +137,21 @@ impl LanguageServer for Backend {
                         kind,
                     },
                 );
+                should_publish = true;
             }
         }
-        self.publish_diagnostics(uri).await;
+        if should_publish {
+            self.publish_diagnostics(uri).await;
+        }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
-        self.documents.lock().await.remove(&uri);
-        self.client.publish_diagnostics(uri, Vec::new(), None).await;
+        let was_tracked = self.documents.lock().await.remove(&uri).is_some();
+        let was_known_requirement = self.known_requirement_files.lock().await.remove(&uri);
+        if was_tracked || was_known_requirement {
+            self.client.publish_diagnostics(uri, Vec::new(), None).await;
+        }
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -135,7 +163,10 @@ impl LanguageServer for Backend {
         resolve_workspace_dependency_from_path(&uri, &mut dep);
 
         let latest = self.registry.latest_for(&dep).await;
-        let markdown = hover_markdown(&dep, latest.as_ref());
+        if let Err(error) = &latest {
+            self.log_dependency_error(&uri, &dep, "hover", error).await;
+        }
+        let markdown = hover_markdown(&dep, latest.as_ref().ok());
         Ok(Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -146,52 +177,41 @@ impl LanguageServer for Backend {
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-        let uri = params.text_document.uri;
-        let position = params.range.start;
-        let Some((document, mut dep)) = self.dependency_at(&uri, position).await else {
+        let uri = params.text_document.uri.clone();
+        let Some(document) = self.documents.lock().await.get(&uri).cloned() else {
             return Ok(None);
-        };
-        let workspace_edit_target = resolve_workspace_dependency_from_path(&uri, &mut dep);
-        if !dep.can_edit {
-            return Ok(None);
-        }
-        let Ok(latest_result) = self.registry.latest_for(&dep).await else {
-            return Ok(None);
-        };
-        let Some(latest) = latest_result.version else {
-            return Ok(None);
-        };
-        if !is_outdated(&dep, &latest) {
-            return Ok(None);
-        }
-        let Some(new_text) = dep.replacement_for(&latest) else {
-            return Ok(None);
-        };
-        let edit_target = workspace_edit_target.unwrap_or_else(|| EditTarget {
-            uri,
-            text: document.text.clone(),
-            span: dep.value_span.clone(),
-        });
-
-        let edit = WorkspaceEdit {
-            changes: Some(HashMap::from([(
-                edit_target.uri,
-                vec![TextEdit {
-                    range: span_to_range(&edit_target.text, &edit_target.span),
-                    new_text,
-                }],
-            )])),
-            ..WorkspaceEdit::default()
-        };
-        let action = CodeAction {
-            title: format!("Update {} to {}", dep.name, latest),
-            kind: Some(CodeActionKind::QUICKFIX),
-            edit: Some(edit),
-            is_preferred: Some(true),
-            ..CodeAction::default()
         };
 
-        Ok(Some(vec![CodeActionOrCommand::CodeAction(action)]))
+        let mut actions = Vec::new();
+        if let Some((update_count, edit)) = self.update_all_workspace_edit(&uri, &document).await {
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: format!(
+                    "Update all {} outdated {} in file",
+                    update_count,
+                    if update_count == 1 {
+                        "dependency"
+                    } else {
+                        "dependencies"
+                    }
+                ),
+                kind: Some(CodeActionKind::SOURCE_FIX_ALL),
+                edit: Some(edit),
+                ..CodeAction::default()
+            }));
+        }
+
+        if let Some(action) = self
+            .update_dependency_code_action(&uri, &document, params.range.start)
+            .await
+        {
+            actions.push(CodeActionOrCommand::CodeAction(action));
+        }
+
+        if actions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(actions))
+        }
     }
 }
 
@@ -214,6 +234,117 @@ impl Backend {
             .into_iter()
             .find(|dep| dep.value_span.start <= offset && offset <= dep.value_span.end)?;
         Some((document, dep))
+    }
+
+    async fn update_dependency_code_action(
+        &self,
+        uri: &Url,
+        document: &Document,
+        position: Position,
+    ) -> Option<CodeAction> {
+        let offset = position_to_offset(&document.text, position)?;
+        let mut dep = parse_manifest(&document.text, document.kind)
+            .into_iter()
+            .find(|dep| dep.value_span.start <= offset && offset <= dep.value_span.end)?;
+        let edit = self
+            .update_dependency_workspace_edit(uri, document, &mut dep, "code action")
+            .await?;
+
+        Some(CodeAction {
+            title: format!("Update {} to {}", dep.name, edit.latest),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(edit.workspace_edit),
+            is_preferred: Some(true),
+            ..CodeAction::default()
+        })
+    }
+
+    async fn update_all_workspace_edit(
+        &self,
+        uri: &Url,
+        document: &Document,
+    ) -> Option<(usize, WorkspaceEdit)> {
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        let mut update_count = 0;
+
+        for mut dep in parse_manifest(&document.text, document.kind) {
+            let Some(edit) = self
+                .update_dependency_text_edit(uri, document, &mut dep, "update all")
+                .await
+            else {
+                continue;
+            };
+            changes.entry(edit.uri).or_default().push(edit.text_edit);
+            update_count += 1;
+        }
+
+        (update_count > 0).then(|| {
+            (
+                update_count,
+                WorkspaceEdit {
+                    changes: Some(changes),
+                    ..WorkspaceEdit::default()
+                },
+            )
+        })
+    }
+
+    async fn update_dependency_workspace_edit(
+        &self,
+        uri: &Url,
+        document: &Document,
+        dep: &mut Dependency,
+        context: &str,
+    ) -> Option<DependencyWorkspaceEdit> {
+        let edit = self
+            .update_dependency_text_edit(uri, document, dep, context)
+            .await?;
+        Some(DependencyWorkspaceEdit {
+            latest: edit.latest,
+            workspace_edit: WorkspaceEdit {
+                changes: Some(HashMap::from([(edit.uri, vec![edit.text_edit])])),
+                ..WorkspaceEdit::default()
+            },
+        })
+    }
+
+    async fn update_dependency_text_edit(
+        &self,
+        uri: &Url,
+        document: &Document,
+        dep: &mut Dependency,
+        context: &str,
+    ) -> Option<DependencyTextEdit> {
+        let workspace_edit_target = resolve_workspace_dependency_from_path(uri, dep);
+        if !dep.can_edit {
+            return None;
+        }
+        let latest_result = match self.registry.latest_for(dep).await {
+            Ok(latest_result) => latest_result,
+            Err(error) => {
+                self.log_dependency_error(uri, dep, context, &error).await;
+                return None;
+            }
+        };
+        let latest = latest_result.version?;
+        if !is_outdated(dep, &latest) {
+            return None;
+        }
+        let new_text = dep.replacement_for(&latest)?;
+        let edit_target = workspace_edit_target.unwrap_or_else(|| EditTarget {
+            uri: uri.clone(),
+            text: document.text.clone(),
+            span: dep.value_span.clone(),
+        });
+
+        Some(DependencyTextEdit {
+            uri: edit_target.uri,
+            text_edit: TextEdit {
+                range: span_to_range(&edit_target.text, &edit_target.span),
+                new_text,
+            },
+            latest,
+        })
     }
 
     async fn publish_diagnostics(&self, uri: Url) {
@@ -259,11 +390,27 @@ impl Backend {
                         ..Diagnostic::default()
                     });
                 }
+                Err(error) => {
+                    self.log_dependency_error(uri, &dep, "diagnostics", &error)
+                        .await;
+                }
                 _ => {}
             }
         }
 
         diagnostics
+    }
+
+    async fn log_dependency_error(&self, uri: &Url, dep: &Dependency, context: &str, error: &str) {
+        self.client
+            .log_message(
+                MessageType::ERROR,
+                format!(
+                    "Zalezhnosti {context} failed for {} in {}: {error}",
+                    dep.name, uri
+                ),
+            )
+            .await;
     }
 
     async fn publish_included_requirements_diagnostics(&self, root_uri: &Url, root_text: &str) {
@@ -334,9 +481,9 @@ fn normalize_requirement_path(path: PathBuf) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
-fn hover_markdown(dep: &Dependency, latest: std::result::Result<&LatestInfo, &String>) -> String {
+fn hover_markdown(dep: &Dependency, latest: Option<&LatestInfo>) -> String {
     match latest {
-        Ok(latest_info)
+        Some(latest_info)
             if latest_info
                 .version
                 .as_ref()
@@ -355,7 +502,7 @@ fn hover_markdown(dep: &Dependency, latest: std::result::Result<&LatestInfo, &St
                 replacement
             )
         }
-        Ok(
+        Some(
             latest_info @ LatestInfo {
                 version: Some(latest),
                 ..
@@ -367,18 +514,17 @@ fn hover_markdown(dep: &Dependency, latest: std::result::Result<&LatestInfo, &St
             dep.current,
             latest
         ),
-        Ok(latest_info @ LatestInfo { version: None, .. }) => format!(
+        Some(latest_info @ LatestInfo { version: None, .. }) => format!(
             "**{}**\n\n{}\n\nCurrent: `{}`\n\nNo stable registry version was found.",
             dep.name,
             dependency_links_markdown(dep, Some(latest_info)),
             dep.current
         ),
-        Err(error) => format!(
-            "**{}**\n\n{}\n\nCurrent: `{}`\n\nCould not check latest version: `{}`",
+        None => format!(
+            "**{}**\n\n{}\n\nCurrent: `{}`\n\nLatest stable: unavailable.",
             dep.name,
             dependency_links_markdown(dep, None),
-            dep.current,
-            error
+            dep.current
         ),
     }
 }
@@ -520,7 +666,7 @@ mod tests {
             version: Some(DependencyVersion::Semver(Version::parse("1.1.0").unwrap())),
             repository_url: None,
         };
-        let markdown = hover_markdown(&dep, Ok(&latest));
+        let markdown = hover_markdown(&dep, Some(&latest));
         assert!(markdown.contains("[Open in crates.io](https://crates.io/crates/serde)"));
         assert!(markdown.contains("Latest stable: `1.1.0`"));
         assert!(markdown.contains("Replacement: `1.1.0`"));
@@ -539,7 +685,7 @@ mod tests {
             repository_url: Some("https://github.com/facebook/react".to_string()),
         };
 
-        let markdown = hover_markdown(&dep, Ok(&latest));
+        let markdown = hover_markdown(&dep, Some(&latest));
 
         assert!(markdown.contains("[Open in npm](https://www.npmjs.com/package/react)"));
         assert!(markdown.contains("[Open repository](https://github.com/facebook/react)"));
@@ -554,7 +700,7 @@ mod tests {
             repository_url: Some("https://github.com/psf/requests".to_string()),
         };
 
-        let markdown = hover_markdown(&dep, Ok(&latest));
+        let markdown = hover_markdown(&dep, Some(&latest));
 
         assert!(markdown.contains("[Open in PyPI](https://pypi.org/project/requests/)"));
         assert!(markdown.contains("[Open repository](https://github.com/psf/requests)"));

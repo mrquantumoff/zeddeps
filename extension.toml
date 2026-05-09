@@ -1,6 +1,6 @@
 id = "zalezhnosti"
 name = "Zalezhnosti"
-version = "0.4.0"
+version = "0.5.0"
 schema_version = 1
 authors = ["Demir Yerli <me@mrquantumoff.dev>"]
 description = "Dependency update hovers and quick fixes for Cargo.toml, package.json, pyproject.toml, and requirements.txt"
@@ -12,6 +12,31 @@ capabilities = [
   { kind = "download_file", host = "objects.githubusercontent.com", path = ["github-production-release-asset-*", "**"] },
 ]
 
+[grammars.toml]
+repository = "https://github.com/tree-sitter-grammars/tree-sitter-toml"
+commit = "64b56832c2cffe41758f28e05c756a3a98d16f41"
+
+[grammars.json]
+repository = "https://github.com/tree-sitter/tree-sitter-json"
+commit = "001c28d7a29832b06b0e831ec77845553c89b56d"
+
+[grammars.requirements]
+repository = "https://github.com/tree-sitter-grammars/tree-sitter-requirements"
+commit = "2c3bb291f497258ba417d052faa14a2dfee6d401"
+
 [language_servers.zalezhnosti-lsp]
 name = "Zalezhnosti LSP"
-languages = ["TOML", "JSON", "Python"]
+languages = [
+  "Cargo Manifest",
+  "NPM Package Manifest",
+  "Python Project Manifest",
+  "Python requirements",
+  "Python constraints",
+]
+
+[language_servers.zalezhnosti-lsp.language_ids]
+"Cargo Manifest" = "toml"
+"NPM Package Manifest" = "json"
+"Python Project Manifest" = "toml"
+"Python requirements" = "requirements"
+"Python constraints" = "requirements"

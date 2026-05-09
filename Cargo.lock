@@ -2253,14 +2253,14 @@ dependencies = [
 
 [[package]]
 name = "zalezhnosti"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "zed_extension_api",
 ]
 
 [[package]]
 name = "zalezhnosti-lsp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "pep440_rs",
  "pep508_rs",

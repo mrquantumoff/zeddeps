@@ -1,0 +1,7 @@
+name = "Python requirements"
+grammar = "requirements"
+path_suffixes = ["requirements.txt", ".requirements.txt"]
+line_comments = ["# "]
+brackets = [
+  { start = "[", end = "]", close = true, newline = false },
+]

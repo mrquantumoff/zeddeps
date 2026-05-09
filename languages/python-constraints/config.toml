@@ -1,0 +1,7 @@
+name = "Python constraints"
+grammar = "requirements"
+path_suffixes = ["constraints.txt", ".constraints.txt"]
+line_comments = ["# "]
+brackets = [
+  { start = "[", end = "]", close = true, newline = false },
+]
