@@ -139,15 +139,13 @@ pub fn parse_cargo_manifest(text: &str) -> Vec<Dependency> {
 
         if trimmed.starts_with('[') {
             active_section = parse_cargo_section(trimmed);
-        } else if let Some(section) = active_section.as_deref() {
-            if CARGO_SECTIONS.contains(&section) {
-                if let Some(dep) =
+        } else if let Some(section) = active_section.as_deref()
+            && CARGO_SECTIONS.contains(&section)
+                && let Some(dep) =
                     parse_cargo_dependency_line(line_without_newline, line_start, section)
                 {
                     dependencies.push(dep);
                 }
-            }
-        }
 
         line_start += line.len();
     }
@@ -204,8 +202,8 @@ fn parse_cargo_dependency_line(line: &str, line_start: usize, section: &str) -> 
     }
 
     // Handle workspace = true in inline table
-    if let Some(ws) = find_key_in_inline_table(value, "workspace") {
-        if ws.value == "true" {
+    if let Some(ws) = find_key_in_inline_table(value, "workspace")
+        && ws.value == "true" {
             return Some(build_workspace_dependency(
                 name,
                 section,
@@ -213,7 +211,6 @@ fn parse_cargo_dependency_line(line: &str, line_start: usize, section: &str) -> 
                 line_start + value_start + ws.span.end,
             ));
         }
-    }
 
     if cargo_inline_table_is_unsupported(value) {
         return None;
@@ -277,15 +274,13 @@ pub fn parse_requirements_manifest(text: &str) -> Vec<Dependency> {
         let line_without_newline = line.trim_end_matches(['\r', '\n']);
         if let Some((requirement, requirement_start)) =
             parse_requirements_line(line_without_newline)
-        {
-            if let Some(dep) = parse_python_requirement_dependency(
+            && let Some(dep) = parse_python_requirement_dependency(
                 requirement,
                 "requirements",
                 line_start + requirement_start,
             ) {
                 dependencies.push(dep);
             }
-        }
         line_start += line.len();
     }
 
@@ -329,17 +324,15 @@ fn find_pyproject_dependency_arrays(text: &str) -> Vec<TomlDependencyArray> {
                 let raw_key = line_without_comment[..equals].trim();
                 if pyproject_dependency_key_is_supported(section, raw_key) {
                     let value_start = line_start + equals + 1;
-                    if let Some(array_start) = skip_toml_ws(text, value_start) {
-                        if text.as_bytes().get(array_start) == Some(&b'[') {
-                            if let Some(array_end) = find_matching_toml_array(text, array_start) {
+                    if let Some(array_start) = skip_toml_ws(text, value_start)
+                        && text.as_bytes().get(array_start) == Some(&b'[')
+                            && let Some(array_end) = find_matching_toml_array(text, array_start) {
                                 arrays.push(TomlDependencyArray {
                                     section: pyproject_section_label(section, raw_key),
                                     start: array_start,
                                     end: array_end,
                                 });
                             }
-                        }
-                    }
                 }
             }
         }
@@ -414,7 +407,7 @@ fn toml_string_tokens(text: &str, from: usize, to: usize) -> Vec<StringToken> {
     let mut cursor = from;
     while cursor < to {
         let Some(index) = text[cursor..to]
-            .find(|char| char == '"' || char == '\'')
+            .find(['"', '\''])
             .map(|offset| cursor + offset)
         else {
             return tokens;
@@ -751,7 +744,7 @@ fn parse_bare_inline_value(text: &str) -> Option<(String, Span)> {
     let trimmed = text.trim_start();
     let start = text.len() - trimmed.len();
     let end = trimmed
-        .find(|char: char| char == ',' || char == '}')
+        .find([',', '}'])
         .map(|offset| start + offset)
         .unwrap_or(text.len());
     let value = text[start..end].trim_end();

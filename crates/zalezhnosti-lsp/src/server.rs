@@ -372,7 +372,7 @@ impl Backend {
     ) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         for mut dep in parse_manifest(text, kind) {
-            resolve_workspace_dependency_from_path(&uri, &mut dep);
+            resolve_workspace_dependency_from_path(uri, &mut dep);
             let latest = self.registry.latest_for(&dep).await;
             match latest {
                 Ok(latest)
@@ -536,11 +536,10 @@ fn dependency_links_markdown(dep: &Dependency, latest: Option<&LatestInfo>) -> S
     };
     let package_url = dep.registry.package_url(&dep.name);
     let mut links = format!("[Open in {registry}]({package_url})");
-    if let Some(repository_url) = latest.and_then(|latest| latest.repository_url.as_deref()) {
-        if repository_url != package_url {
+    if let Some(repository_url) = latest.and_then(|latest| latest.repository_url.as_deref())
+        && repository_url != package_url {
             links.push_str(&format!(" | [Open repository]({repository_url})"));
         }
-    }
     links
 }
 
