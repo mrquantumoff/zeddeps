@@ -6,6 +6,15 @@ pub enum Registry {
     Npm,
 }
 
+impl Registry {
+    pub fn package_url(&self, name: &str) -> String {
+        match self {
+            Registry::Cargo => format!("https://crates.io/crates/{name}"),
+            Registry::Npm => format!("https://www.npmjs.com/package/{name}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,

@@ -1,7 +1,7 @@
 use zed_extension_api::{self as zed, Result};
 
 const LANGUAGE_SERVER_ID: &str = "zeddeps-lsp";
-const RELEASE_REPOSITORY: &str = "mrqua/zeddeps";
+const RELEASE_REPOSITORY: &str = "mrquantumoff/zeddeps";
 
 struct ZedDepsExtension;
 
@@ -21,6 +21,7 @@ impl zed::Extension for ZedDepsExtension {
             .ok()
             .or_else(|| worktree.which(server_binary))
             .or_else(|| worktree.which("zeddeps-lsp"))
+            .or_else(|| self.local_dev_server_path(worktree, server_binary))
             .map(Ok)
             .unwrap_or_else(|| self.download_language_server(os, arch))?;
 
@@ -33,6 +34,22 @@ impl zed::Extension for ZedDepsExtension {
 }
 
 impl ZedDepsExtension {
+    fn local_dev_server_path(
+        &self,
+        worktree: &zed::Worktree,
+        server_binary: &'static str,
+    ) -> Option<String> {
+        let manifest = worktree.read_text_file("Cargo.toml").ok()?;
+        if !(manifest.contains("name = \"zeddeps\"")
+            && manifest.contains("members = [\"crates/zeddeps-lsp\"]"))
+        {
+            return None;
+        }
+
+        let root = worktree.root_path().replace('\\', "/");
+        Some(format!("{root}/target/debug/{server_binary}"))
+    }
+
     fn download_language_server(&self, os: zed::Os, arch: zed::Architecture) -> Result<String> {
         let asset_name = platform_asset_name(os, arch)?;
         let release = zed::latest_github_release(
@@ -41,7 +58,12 @@ impl ZedDepsExtension {
                 require_assets: true,
                 pre_release: false,
             },
-        )?;
+        )
+        .map_err(|error| {
+            format!(
+                "Could not find {LANGUAGE_SERVER_ID}. Set ZEDDEPS_LSP_PATH, put zeddeps-lsp on PATH, run `cargo build -p zeddeps-lsp` from this repo for local dev, or publish a GitHub release at {RELEASE_REPOSITORY}. GitHub error: {error}"
+            )
+        })?;
         let asset = release
             .assets
             .iter()

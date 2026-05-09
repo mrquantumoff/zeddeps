@@ -216,27 +216,28 @@ fn hover_markdown(
         Registry::Cargo => "crates.io",
         Registry::Npm => "npm",
     };
+    let package_url = dep.registry.package_url(&dep.name);
     match latest {
         Ok(Some(latest)) if is_outdated(dep, latest) => {
             let replacement = dep
                 .replacement_for(latest)
                 .unwrap_or_else(|| latest.to_string());
             format!(
-                "**{}**\n\nRegistry: `{}`\n\nCurrent: `{}`\n\nLatest stable: `{}`\n\nReplacement: `{}`",
-                dep.name, registry, dep.current, latest, replacement
+                "**{}**\n\n[Open in {}]({})\n\nCurrent: `{}`\n\nLatest stable: `{}`\n\nReplacement: `{}`",
+                dep.name, registry, package_url, dep.current, latest, replacement
             )
         }
         Ok(Some(latest)) => format!(
-            "**{}**\n\nRegistry: `{}`\n\nCurrent: `{}`\n\nLatest stable: `{}`\n\nAlready up to date.",
-            dep.name, registry, dep.current, latest
+            "**{}**\n\n[Open in {}]({})\n\nCurrent: `{}`\n\nLatest stable: `{}`\n\nAlready up to date.",
+            dep.name, registry, package_url, dep.current, latest
         ),
         Ok(None) => format!(
-            "**{}**\n\nRegistry: `{}`\n\nCurrent: `{}`\n\nNo stable registry version was found.",
-            dep.name, registry, dep.current
+            "**{}**\n\n[Open in {}]({})\n\nCurrent: `{}`\n\nNo stable registry version was found.",
+            dep.name, registry, package_url, dep.current
         ),
         Err(error) => format!(
-            "**{}**\n\nRegistry: `{}`\n\nCurrent: `{}`\n\nCould not check latest version: `{}`",
-            dep.name, registry, dep.current, error
+            "**{}**\n\n[Open in {}]({})\n\nCurrent: `{}`\n\nCould not check latest version: `{}`",
+            dep.name, registry, package_url, dep.current, error
         ),
     }
 }
@@ -310,6 +311,7 @@ mod tests {
         let dep = parse_manifest(text, Registry::Cargo).remove(0);
         let latest = Some(Version::parse("1.1.0").unwrap());
         let markdown = hover_markdown(&dep, Ok(&latest));
+        assert!(markdown.contains("[Open in crates.io](https://crates.io/crates/serde)"));
         assert!(markdown.contains("Latest stable: `1.1.0`"));
         assert!(markdown.contains("Replacement: `1.1.0`"));
     }

@@ -2,12 +2,12 @@ id = "zeddeps"
 name = "ZedDeps"
 version = "0.1.0"
 schema_version = 1
-authors = ["ZedDeps contributors"]
+authors = ["Demir Yerli <me@mrquantumoff.dev>"]
 description = "Dependency update hovers and quick fixes for Cargo.toml and package.json"
-repository = "https://github.com/mrqua/zeddeps"
+repository = "https://git.mrquantumoff.dev/qnt/zeddeps"
 
 capabilities = [
-  { kind = "download_file", host = "github.com", path = ["mrqua", "zeddeps", "releases", "download", "**"] },
+  { kind = "download_file", host = "github.com", path = ["mrquantumoff", "zeddeps", "releases", "download", "**"] },
   { kind = "download_file", host = "objects.githubusercontent.com", path = ["github-production-release-asset-*", "**"] },
 ]
 
