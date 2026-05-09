@@ -2,6 +2,7 @@ use zed_extension_api::{self as zed, Result};
 
 const LANGUAGE_SERVER_ID: &str = "zalezhnosti-lsp";
 const RELEASE_REPOSITORY: &str = "mrquantumoff/zalezhnosti";
+const EXTENSION_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 struct ZalezhnostiExtension;
 
@@ -52,35 +53,19 @@ impl ZalezhnostiExtension {
 
     fn download_language_server(&self, os: zed::Os, arch: zed::Architecture) -> Result<String> {
         let asset_name = platform_asset_name(os, arch)?;
-        let release = zed::latest_github_release(
-            RELEASE_REPOSITORY,
-            zed::GithubReleaseOptions {
-                require_assets: true,
-                pre_release: false,
-            },
-        )
-        .map_err(|error| {
-            format!(
-                "Could not find {LANGUAGE_SERVER_ID}. Set ZALEZHNOSTI_LSP_PATH, put zalezhnosti-lsp on PATH, run `cargo build -p zalezhnosti-lsp` from this repo for local dev, or publish a GitHub release at {RELEASE_REPOSITORY}. GitHub error: {error}"
-            )
-        })?;
-        let asset = release
-            .assets
-            .iter()
-            .find(|asset| asset.name == asset_name)
-            .ok_or_else(|| {
-                format!(
-                    "No {asset_name} asset found for {LANGUAGE_SERVER_ID} release {}",
-                    release.version
-                )
-            })?;
+        let download_url = release_asset_url(&asset_name);
 
         let destination = server_binary_for_os(os).to_string();
         zed::download_file(
-            &asset.download_url,
+            &download_url,
             &destination,
             zed::DownloadedFileType::Uncompressed,
-        )?;
+        )
+        .map_err(|error| {
+            format!(
+                "Could not download {LANGUAGE_SERVER_ID} from {download_url}. Set ZALEZHNOSTI_LSP_PATH, put zalezhnosti-lsp on PATH, run `cargo build -p zalezhnosti-lsp` from this repo for local dev, or publish the {asset_name} asset for release v{EXTENSION_VERSION} at {RELEASE_REPOSITORY}. Download error: {error}"
+            )
+        })?;
 
         if !matches!(os, zed::Os::Windows) {
             zed::make_file_executable(&destination)?;
@@ -88,6 +73,12 @@ impl ZalezhnostiExtension {
 
         Ok(destination)
     }
+}
+
+fn release_asset_url(asset_name: &str) -> String {
+    format!(
+        "https://github.com/{RELEASE_REPOSITORY}/releases/download/v{EXTENSION_VERSION}/{asset_name}"
+    )
 }
 
 fn server_binary_for_os(os: zed::Os) -> &'static str {
@@ -114,6 +105,21 @@ fn platform_asset_name(os: zed::Os, arch: zed::Architecture) -> Result<String> {
         ""
     };
     Ok(format!("zalezhnosti-lsp-{arch}-{os}{suffix}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_versioned_release_asset_url() {
+        assert_eq!(
+            release_asset_url("zalezhnosti-lsp-x86_64-pc-windows-msvc.exe"),
+            format!(
+                "https://github.com/mrquantumoff/zalezhnosti/releases/download/v{EXTENSION_VERSION}/zalezhnosti-lsp-x86_64-pc-windows-msvc.exe"
+            )
+        );
+    }
 }
 
 zed::register_extension!(ZalezhnostiExtension);

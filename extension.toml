@@ -1,6 +1,6 @@
 id = "zalezhnosti"
 name = "Zalezhnosti"
-version = "0.3.0"
+version = "0.3.1"
 schema_version = 1
 authors = ["Demir Yerli <me@mrquantumoff.dev>"]
 description = "Dependency update hovers and quick fixes for Cargo.toml and package.json"
@@ -8,6 +8,7 @@ repository = "https://git.mrquantumoff.dev/qnt/zalezhnosti"
 
 capabilities = [
   { kind = "download_file", host = "github.com", path = ["mrquantumoff", "zalezhnosti", "releases", "download", "**"] },
+  { kind = "download_file", host = "release-assets.githubusercontent.com", path = ["github-production-release-asset", "**"] },
   { kind = "download_file", host = "objects.githubusercontent.com", path = ["github-production-release-asset-*", "**"] },
 ]
 
