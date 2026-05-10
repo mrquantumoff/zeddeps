@@ -1,6 +1,6 @@
 # Zalezhnosti
 
-A vibecoded Zed extension that shows dependency update hovers and quick fixes for **Cargo.toml**, **package.json**, **pyproject.toml**, and **requirements.txt**.
+A Zed extension that shows dependency update hovers and quick fixes for **Cargo.toml**, **package.json**, **pyproject.toml**, and **requirements.txt**.
 
 ## Features
 
